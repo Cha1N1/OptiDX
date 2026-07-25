@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 ###############################################################################
-# OptiDX v4.0 - Universal Game Mod Installer
+# OptiDX v4.1 - Universal Game Mod Installer
 #
 # Detects the game it was launched next to, resolves it against the RenoDX
 # wiki mod table, and installs the matching .addon64/.addon32 snapshot along
@@ -30,7 +30,7 @@ export LC_ALL=C
 # GLOBALS
 ###############################################################################
 
-SCRIPT_VERSION="4.0"
+SCRIPT_VERSION="4.1"
 MARKER=".optidx-installed"
 MANIFEST=".optidx-files"          # every path OptiDX created, for --uninstall
 
@@ -99,6 +99,8 @@ RENODX_ONLY=false
 LUMA_ONLY=false
 FORCE_UPDATE=false
 DO_UNINSTALL=false
+DRY_RUN=false
+LIST_QUIRKS=false
 INSTALLED_FILES=()
 MOD_FOUND=false
 GAME_ARGS=()
@@ -106,6 +108,28 @@ HAVE_7Z=0
 FETCH_LAST_CODE=""
 NET_DIAG_DONE=0
 SEVENZIP=""
+
+# Game Quirks default state (resolved per game)
+QUIRK_OPTISCALER_DLL="dxgi.dll"
+QUIRK_SKIP_OPTISCALER=false
+QUIRK_SKIP_RESHADE=false
+QUIRK_SKIP_DLSS_ENABLER=false
+QUIRK_EXTRA_DLL_COPIES=""
+QUIRKS_MATCHED=""
+
+# Built-in Game Quirks database
+# Key: normalized game title (lowercase, alphanumeric characters only)
+# Value: semicolon-delimited key=value pairs
+declare -A GAME_QUIRKS=(
+    ["arknightsendfield"]="optiscaler_dll=d3d12.dll"
+    ["endfield"]="optiscaler_dll=d3d12.dll"
+    ["forspoken"]="optiscaler_dll=d3d12.dll"
+    ["forzahorizon6"]="optiscaler_dll=d3d12.dll"
+    ["easportswrc"]="optiscaler_dll=d3d12.dll"
+    ["atomicrops"]="skip_reshade=true"
+    ["dysonsphereprogram"]="skip_reshade=true"
+    ["minecraft"]="skip_reshade=true"
+)
 
 COLOR_INFO='\033[36m'
 COLOR_SUCCESS='\033[32m'
@@ -146,8 +170,8 @@ die()     { error "$*"; exit 1; }
 
 print_banner() {
     _log "\n${COLOR_BOLD}${COLOR_INFO}  ╔════════════════════════════════════════════╗
-  ║    OptiScaler + RenoDX (Linux Engine v$SCRIPT_VERSION)  ║
-  ║    Heroic, Lutris, Steam & UE Mod Engine   ║
+  ║    OptiScaler + RenoDX ( v$SCRIPT_VERSION)  ║
+  ║    Heroic, Lutris, Steam & UE Mod Engine Powered by Linux  ║
   ╚════════════════════════════════════════════╝${COLOR_RESET}"
 }
 
@@ -704,13 +728,13 @@ detect_game() {
     # ONE filesystem walk that also carries each file's size, instead of a walk
     # plus a basename+stat fork per candidate (~400 processes on a large game).
     # Unity detection rides along in the same pass rather than re-walking.
-    local best_exe="" best_score=-1 exe base lower score size
+    local best_exe="" best_score=-9999 exe base lower score size
     local find_out
-    find_out=$(find . -maxdepth 5 -type f \( -iname "*.exe" -o -iname "UnityPlayer.dll" \) \
-                    -printf '%s\t%p\n' 2>/dev/null | head -300)
+    find_out=$(find . -maxdepth 7 -type f \( -iname "*.exe" -o -iname "UnityPlayer.dll" \) \
+                    -printf '%s\t%p\n' 2>/dev/null | head -500)
     # Busybox/BSD find has no -printf; fall back to paths only (size term drops out).
-    [[ -z "$find_out" ]] && find_out=$(find . -maxdepth 5 -type f \( -iname "*.exe" -o -iname "UnityPlayer.dll" \) \
-                                            2>/dev/null | head -300 | sed 's/^/0\t/')
+    [[ -z "$find_out" ]] && find_out=$(find . -maxdepth 7 -type f \( -iname "*.exe" -o -iname "UnityPlayer.dll" \) \
+                                            2>/dev/null | head -500 | sed 's/^/0\t/')
 
     while IFS=$'\t' read -r size exe; do
         [[ -z "$exe" ]] && continue
@@ -721,13 +745,14 @@ detect_game() {
         [[ "$lower" == *.exe ]] || continue
         [[ "$lower" =~ $UE_IGNORE_REGEX ]] && continue
 
-        score=0
+        score=100
         [[ "$lower" == *shipping.exe ]]  && score=$(( score + 100 ))
         [[ "$lower" == *game.exe ]]      && score=$(( score + 50 ))
         [[ "$lower" == *win64* ]]        && score=$(( score + 20 ))
         # Path tests are case-insensitive: some titles ship binaries/win64.
         [[ "${exe,,}" == */binaries/win64/* ]] && score=$(( score + 40 ))
         [[ "${exe,,}" == */engine/* ]]         && score=$(( score - 60 ))
+        [[ "$lower" == *launcher*.exe ]]       && score=$(( score - 60 ))
         # Anti-cheat launcher shims sit beside the real binary and are often
         # marginally larger, which was enough to win on size alone.
         [[ "$lower" == *eac-win64* || "$lower" == *_eac.exe || "$lower" == *-eac.exe ]] &&
@@ -818,6 +843,104 @@ detect_game() {
     success "Detected Game: ${COLOR_BOLD}${COLOR_WHITE}$GAME_DISPLAY${COLOR_RESET}"
     info "Candidate titles: $(printf "'%s' " "${CANDIDATE_TITLES[@]}")"
     return 0
+}
+
+###############################################################################
+# GAME QUIRKS SYSTEM
+###############################################################################
+
+USER_QUIRKS_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/optidx/quirks.conf"
+
+resolve_game_quirks() {
+    QUIRK_OPTISCALER_DLL="dxgi.dll"
+    QUIRK_SKIP_OPTISCALER=false
+    QUIRK_SKIP_RESHADE=false
+    QUIRK_SKIP_DLSS_ENABLER=false
+    QUIRK_EXTRA_DLL_COPIES=""
+    QUIRKS_MATCHED=""
+
+    local title title_key quirk_str="" src=""
+
+    # 1. Load user config overrides if present
+    local -a user_keys=() user_vals=()
+    if [[ -f "$USER_QUIRKS_CONF" ]]; then
+        local line k v
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ -z "$line" || "$line" == "#"* ]] && continue
+            k=$(norm "${line%%[[:space:]]*}")
+            v="${line#*[[:space:]]}"
+            v="${v#"${v%%[![:space:]]*}"}"
+            [[ -n "$k" && -n "$v" ]] && { user_keys+=("$k"); user_vals+=("$v"); }
+        done <"$USER_QUIRKS_CONF"
+    fi
+
+    # 2. Match candidates against user config first, then built-in database
+    for title in "${CANDIDATE_TITLES[@]}"; do
+        title_key=$(norm "$title")
+        [[ -z "$title_key" ]] && continue
+
+        if (( ${#user_keys[@]} )); then
+            local i
+            for (( i=0; i<${#user_keys[@]}; i++ )); do
+                if [[ "${user_keys[i]}" == "$title_key" ]]; then
+                    quirk_str="${user_vals[i]}"
+                    src="user config ($USER_QUIRKS_CONF)"
+                    QUIRKS_MATCHED="$title"
+                    break
+                fi
+            done
+        fi
+
+        if [[ -z "$quirk_str" && -n "${GAME_QUIRKS[$title_key]:-}" ]]; then
+            quirk_str="${GAME_QUIRKS[$title_key]}"
+            src="built-in database"
+            QUIRKS_MATCHED="$title"
+        fi
+
+        [[ -n "$quirk_str" ]] && break
+    done
+
+    [[ -z "$quirk_str" ]] && return 0
+
+    info "Applied game quirk for '${COLOR_BOLD}${COLOR_WHITE}${QUIRKS_MATCHED}${COLOR_RESET}' (from $src): $quirk_str"
+
+    local kv pair_key pair_val
+    IFS=';' read -ra pairs <<< "$quirk_str"
+    for kv in "${pairs[@]}"; do
+        kv="${kv#"${kv%%[![:space:]]*}"}"
+        kv="${kv%"${kv##*[![:space:]]}"}"
+        [[ -z "$kv" || "$kv" != *"="* ]] && continue
+        pair_key="${kv%%=*}"
+        pair_val="${kv#*=}"
+        pair_key="${pair_key,,}"
+        case "$pair_key" in
+            optiscaler_dll)    QUIRK_OPTISCALER_DLL="$pair_val" ;;
+            skip_optiscaler)   [[ "$pair_val" == "1" || "$pair_val" == "true" ]] && QUIRK_SKIP_OPTISCALER=true ;;
+            skip_reshade)      [[ "$pair_val" == "1" || "$pair_val" == "true" ]] && QUIRK_SKIP_RESHADE=true ;;
+            skip_dlss_enabler) [[ "$pair_val" == "1" || "$pair_val" == "true" ]] && QUIRK_SKIP_DLSS_ENABLER=true ;;
+            extra_dll_copies)  QUIRK_EXTRA_DLL_COPIES="$pair_val" ;;
+        esac
+    done
+
+    if [[ "$QUIRK_OPTISCALER_DLL" != "dxgi.dll" ]]; then
+        info "Quirk override: OptiScaler proxy DLL set to '${COLOR_BOLD}${COLOR_WHITE}${QUIRK_OPTISCALER_DLL}${COLOR_RESET}'"
+    fi
+    return 0
+}
+
+list_all_quirks() {
+    print_banner
+    _log "\n${COLOR_BOLD}${COLOR_WHITE}Built-in Game Quirks Database:${COLOR_RESET}"
+    local k
+    for k in "${!GAME_QUIRKS[@]}"; do
+        printf '  %b%-24s%b -> %s\n' "$COLOR_INFO" "$k" "$COLOR_RESET" "${GAME_QUIRKS[$k]}" >&2
+    done
+    if [[ -f "$USER_QUIRKS_CONF" ]]; then
+        _log "\n${COLOR_BOLD}${COLOR_WHITE}User Game Quirks ($USER_QUIRKS_CONF):${COLOR_RESET}"
+        cat "$USER_QUIRKS_CONF" >&2
+    else
+        _log "\n${COLOR_INFO}User config file not present ($USER_QUIRKS_CONF)${COLOR_RESET}"
+    fi
 }
 
 ###############################################################################
@@ -1036,14 +1159,14 @@ find_luma_mod() {
         if [[ "$found" == true ]]; then
             # Shader/companion directory the addon loads at runtime.
             [[ -d "$TMP_DIR/luma/Luma" ]] && cp -rf "$TMP_DIR/luma/Luma" . 2>/dev/null && track "Luma"
-            # Luma bundles its own dxgi.dll proxy. Installing it over the top of
-            # OptiScaler's dxgi.dll would silently disable OptiScaler, so only
+            # Luma bundles its own proxy. Installing it over the top of
+            # OptiScaler's proxy would silently disable OptiScaler, so only
             # take it when nothing else has claimed that slot.
-            if [[ ! -f "dxgi.dll" && -f "$TMP_DIR/luma/dxgi.dll" ]]; then
-                cp -f "$TMP_DIR/luma/dxgi.dll" "dxgi.dll" 2>/dev/null &&
-                    { track "dxgi.dll"; info "Installed Luma's dxgi.dll proxy (no OptiScaler present)"; }
-            elif [[ -f "dxgi.dll" && -f "$TMP_DIR/luma/dxgi.dll" ]]; then
-                warn "Kept OptiScaler's dxgi.dll; Luma's proxy was not installed"
+            if [[ ! -f "$QUIRK_OPTISCALER_DLL" && -f "$TMP_DIR/luma/dxgi.dll" ]]; then
+                cp -f "$TMP_DIR/luma/dxgi.dll" "$QUIRK_OPTISCALER_DLL" 2>/dev/null &&
+                    { track "$QUIRK_OPTISCALER_DLL"; info "Installed Luma's $QUIRK_OPTISCALER_DLL proxy (no OptiScaler present)"; }
+            elif [[ -f "$QUIRK_OPTISCALER_DLL" && -f "$TMP_DIR/luma/dxgi.dll" ]]; then
+                warn "Kept OptiScaler's $QUIRK_OPTISCALER_DLL; Luma's proxy was not installed"
             fi
             MOD_FOUND=true
             success "Installed Luma mod ($name)"
@@ -1086,7 +1209,7 @@ install_engine_fallback() {
 ###############################################################################
 
 install_optiscaler() {
-    [[ "$RENODX_ONLY" == true || "$LUMA_ONLY" == true ]] && return 0
+    [[ "$RENODX_ONLY" == true || "$LUMA_ONLY" == true || "$QUIRK_SKIP_OPTISCALER" == true ]] && return 0
     info "Installing OptiScaler into $PWD"
 
     # Resolve the build from /releases, never /tags. A tag can exist with no
@@ -1146,12 +1269,25 @@ install_optiscaler() {
         cd "$root" 2>/dev/null && find . -mindepth 1 -maxdepth 1 -printf '%P\n' 2>/dev/null)
     cp -rf "$root"/. . 2>/dev/null
 
-    # Any optiscaler*.dll becomes the dxgi.dll proxy, whatever it is called.
-    if [[ ! -f "dxgi.dll" ]]; then
+    # Any optiscaler*.dll becomes the target proxy DLL (default: dxgi.dll), whatever it is called.
+    if [[ ! -f "$QUIRK_OPTISCALER_DLL" ]]; then
         f=$(find . -maxdepth 1 -iname "optiscaler*.dll" 2>/dev/null | head -1)
-        [[ -n "$f" ]] && { mv -f "$f" "dxgi.dll"; track "dxgi.dll"; }
+        [[ -n "$f" ]] && { mv -f "$f" "$QUIRK_OPTISCALER_DLL"; track "$QUIRK_OPTISCALER_DLL"; }
     fi
-    [[ -f "dxgi.dll" ]] && success "Installed OptiScaler (dxgi.dll)" || warn "OptiScaler DLL not found after extraction"
+    [[ -f "$QUIRK_OPTISCALER_DLL" ]] && success "Installed OptiScaler ($QUIRK_OPTISCALER_DLL)" || warn "OptiScaler DLL not found after extraction"
+
+    if [[ -n "$QUIRK_EXTRA_DLL_COPIES" && -f "$QUIRK_OPTISCALER_DLL" ]]; then
+        local extra_dll
+        IFS=',' read -ra extra_dlls <<< "$QUIRK_EXTRA_DLL_COPIES"
+        for extra_dll in "${extra_dlls[@]}"; do
+            extra_dll="${extra_dll#"${extra_dll%%[![:space:]]*}"}"
+            extra_dll="${extra_dll%"${extra_dll##*[![:space:]]}"}"
+            [[ -n "$extra_dll" ]] && cp -f "$QUIRK_OPTISCALER_DLL" "$extra_dll" 2>/dev/null && {
+                track "$extra_dll"
+                info "Created extra DLL copy: $extra_dll"
+            }
+        done
+    fi
 
     if [[ ! -f "d3dcompiler_47.dll" ]]; then
         fetch "$D3DCOMPILER_URL" "d3dcompiler_47.dll" 2 && track "d3dcompiler_47.dll" ||
@@ -1169,7 +1305,7 @@ install_optiscaler() {
 }
 
 install_dlss_enabler() {
-    [[ "$RENODX_ONLY" == true || "$LUMA_ONLY" == true ]] && return 0
+    [[ "$RENODX_ONLY" == true || "$LUMA_ONLY" == true || "$QUIRK_SKIP_DLSS_ENABLER" == true ]] && return 0
     info "Installing DLSS Enabler..."
 
     local json url="" dll
@@ -1200,20 +1336,21 @@ install_dlss_enabler() {
 
 # Nothing loads ReShade (and therefore nothing loads the RenoDX addon) unless a
 # proxy DLL sits next to the game. OptiScaler normally is that proxy - it ships
-# as dxgi.dll with LoadReshade=true. If OptiScaler is absent or its download
-# failed, promote ReShade itself to dxgi.dll so the addon is actually loaded.
+# as dxgi.dll (or d3d12.dll per quirk) with LoadReshade=true. If OptiScaler is
+# absent or its download failed, promote ReShade itself to proxy DLL so the addon loads.
 ensure_reshade_proxy() {
     local src="$1"
     [[ -f "$src" ]] || return 0
-    [[ -f "dxgi.dll" ]] && return 0
-    cp -f "$src" "dxgi.dll" 2>/dev/null && {
-        track "dxgi.dll"
-        warn "OptiScaler missing - installed ReShade as dxgi.dll so the addon loads"
+    [[ -f "$QUIRK_OPTISCALER_DLL" ]] && return 0
+    cp -f "$src" "$QUIRK_OPTISCALER_DLL" 2>/dev/null && {
+        track "$QUIRK_OPTISCALER_DLL"
+        warn "OptiScaler missing - installed ReShade as $QUIRK_OPTISCALER_DLL so the addon loads"
     }
     return 0
 }
 
 install_reshade() {
+    [[ "$QUIRK_SKIP_RESHADE" == true ]] && return 0
     [[ -f "ReShade64.dll" ]] && { info "ReShade already present"; ensure_reshade_proxy "ReShade64.dll"; return 0; }
     (( HAVE_7Z )) || { warn "Skipping ReShade (needs 7z)"; return 0; }
     info "Installing ReShade..."
@@ -1222,8 +1359,6 @@ install_reshade() {
     extract_archive "$TMP_DIR/ReShade_Setup_Addon.exe" "$TMP_DIR/reshade" || {
         warn "Could not unpack the ReShade installer"; return 0; }
 
-    # The DLL lives in the installer's PE resource section; search recursively
-    # rather than assuming it lands at the extraction root.
     local dll
     dll=$(find "$TMP_DIR/reshade" -iname "ReShade64.dll" 2>/dev/null | head -1)
     [[ -z "$dll" ]] && dll=$(find "$TMP_DIR/reshade" -iname "*ReShade*64*.dll" 2>/dev/null | head -1)
@@ -1253,11 +1388,13 @@ write_manifest() {
 uninstall_dir() {
     local dir="$1" removed=0 p
     [[ -f "$dir/$MANIFEST" ]] || return 1
+    info "Uninstalling OptiDX files from $dir..."
     while IFS= read -r p; do
         # Refuse absolute paths and traversal - the manifest is ours, but a
         # corrupted one must never let rm -rf escape the game directory.
         [[ -z "$p" || "$p" == /* || "$p" == *".."* ]] && continue
         if [[ -e "$dir/$p" || -L "$dir/$p" ]]; then
+            info "Removing: $p"
             rm -rf -- "$dir/$p" 2>/dev/null && removed=$(( removed + 1 ))
         fi
     done <"$dir/$MANIFEST"
@@ -1279,7 +1416,10 @@ verify_installation() {
     info "Verifying installation in $PWD"
     local found=false a addons
 
-    [[ -f "dxgi.dll" ]] && { success "OptiScaler active (dxgi.dll)"; found=true; }
+    if [[ -f "$QUIRK_OPTISCALER_DLL" ]]; then
+        success "OptiScaler active ($QUIRK_OPTISCALER_DLL)"
+        found=true
+    fi
     addons=$(find . -maxdepth 1 -type f \( -name "*.addon64" -o -name "*.addon32" -o -name "*.addon" \) 2>/dev/null)
     if [[ -n "$addons" ]]; then
         while IFS= read -r a; do [[ -n "$a" ]] && success "Mod installed: $(basename "$a")"; done <<<"$addons"
@@ -1315,6 +1455,16 @@ do_install() {
     info "Install directory: $PWD"
     info "Target game: ${COLOR_BOLD}${COLOR_WHITE}$GAME_DISPLAY${COLOR_RESET}"
 
+    resolve_game_quirks
+
+    if [[ "$DRY_RUN" == true ]]; then
+        info "Dry run enabled — skipping file downloads and modifications."
+        find_renodx_mod
+        [[ "$MOD_FOUND" == false ]] && find_luma_mod
+        success "Dry run simulation complete."
+        return 0
+    fi
+
     warm_metadata_caches
     cleanup_stale
     install_optiscaler
@@ -1337,11 +1487,11 @@ do_install() {
     # Written in both places: the launcher re-enters at the game root, but the
     # payload lives in the binary directory.
     write_manifest
-    printf '%s\n' "$PWD" >"$MARKER" 2>/dev/null
+    printf '%s\nv%s\n' "$PWD" "$SCRIPT_VERSION" >"$MARKER" 2>/dev/null
     # The launcher re-enters at the game root, so a marker lives there too - it
     # records the payload directory so the fast path knows where to log without
     # re-running detection.
-    [[ "$PWD" != "$START_DIR" ]] && printf '%s\n' "$PWD" >"$START_DIR/$MARKER" 2>/dev/null
+    [[ "$PWD" != "$START_DIR" ]] && printf '%s\nv%s\n' "$PWD" "$SCRIPT_VERSION" >"$START_DIR/$MARKER" 2>/dev/null
     sync 2>/dev/null
 
     _log "\n${COLOR_SUCCESS}${COLOR_BOLD}  All done! Installation complete.${COLOR_RESET}"
@@ -1354,11 +1504,13 @@ OptiDX v$SCRIPT_VERSION - OptiScaler + RenoDX installer
 
   optidx.sh [options] [-- <command to launch the game>]
 
-  --renodx     Only install RenoDX/Luma mods (skip OptiScaler/DLSS)
-  --luma       Only install Luma mods
-  --update     Re-run installation even if already installed
-  --uninstall  Remove everything OptiDX installed, then launch normally
-  --help       Show this message
+  --renodx       Only install RenoDX/Luma mods (skip OptiScaler/DLSS)
+  --luma         Only install Luma mods
+  --update       Re-run installation even if already installed
+  --uninstall    Remove everything OptiDX installed, then launch normally
+  --dry-run      Simulate game detection and mod matching without installing
+  --list-quirks  Display all built-in and user-defined game quirks
+  --help         Show this message
 
 Options must come BEFORE the game command; everything after the first
 non-option argument is forwarded to the game untouched.
@@ -1386,10 +1538,12 @@ main() {
     for arg in "$@"; do
         if [[ "$opts" == true ]]; then
             case "$arg" in
-                --renodx)    RENODX_ONLY=true;  continue ;;
-                --luma)      LUMA_ONLY=true;    continue ;;
-                --update)    FORCE_UPDATE=true; continue ;;
-                --uninstall) DO_UNINSTALL=true; continue ;;
+                --renodx)      RENODX_ONLY=true;  continue ;;
+                --luma)        LUMA_ONLY=true;    continue ;;
+                --update)      FORCE_UPDATE=true; continue ;;
+                --uninstall)   DO_UNINSTALL=true; continue ;;
+                --dry-run)     DRY_RUN=true;      continue ;;
+                --list-quirks) LIST_QUIRKS=true;  continue ;;
                 --help|-h) usage; exit 0 ;;
                 --)        opts=false; continue ;;
                 *)         opts=false ;;      # first non-flag: the game command
@@ -1397,6 +1551,11 @@ main() {
         fi
         GAME_ARGS+=("$arg")
     done
+
+    if [[ "$LIST_QUIRKS" == true ]]; then
+        list_all_quirks
+        exit 0
+    fi
 
     local have_game=0
     (( ${#GAME_ARGS[@]} )) && have_game=1
