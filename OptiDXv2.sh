@@ -125,10 +125,20 @@ declare -A GAME_QUIRKS=(
     ["endfield"]="optiscaler_dll=d3d12.dll"
     ["forspoken"]="optiscaler_dll=d3d12.dll"
     ["forzahorizon6"]="optiscaler_dll=d3d12.dll"
-    ["easportswrc"]="optiscaler_dll=d3d12.dll"
     ["atomicrops"]="skip_reshade=true"
     ["dysonsphereprogram"]="skip_reshade=true"
     ["minecraft"]="skip_reshade=true"
+    ["immortalsofaveum"]="optiscaler_dll=d3d12.dll"                   # bypasses signature verification
+    ["deadoralive6lastround"]="optiscaler_dll=d3d12.dll"              # only d3d12.dll or version.dll work, all else crashes
+    ["marvelsmidnightsuns"]="optiscaler_dll=d3d12.dll"                # anti-cheat/anti-tamper blocks default naming
+    ["asterigoscurseofthestars"]="optiscaler_dll=d3d12.dll"           # required for DLSS on Nvidia, else crash
+    ["nevernesstoeverness"]="optiscaler_dll=d3d12.dll"                # (or version.dll — wiki lists both)
+    ["zenlesszonezero"]="optiscaler_dll=d3d12.dll"                    # required, plus needs -use-d3d12 launch arg
+    ["grandtheftautoiiidefinitiveedition"]="optiscaler_dll=d3d12.dll"       # "may be required" + -dx12 launch opt, City Glow off
+    ["grandtheftautosanandreasdefinitiveedition"]="optiscaler_dll=d3d12.dll" # same caveats as GTA3 DE
+    ["grandtheftautovicecitydefinitiveedition"]="optiscaler_dll=d3d12.dll"  # same caveats as GTA3 DE
+    ["monsterhunterrise"]="optiscaler_dll=d3d12.dll"                        # wiki says "optimal", not strictly required
+    ["neverforspeedunbound"]="optiscaler_dll=d3d12.dll"                     # only needed on Linux specifically (dxgi.dll on Windows)
 )
 
 COLOR_INFO='\033[36m'
