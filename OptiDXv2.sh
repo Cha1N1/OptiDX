@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
 ###############################################################################
-# OptiDX v4.1 - Universal Game Mod Installer
+# OptiDX v2.0 - Universal Game Mod Installer
 #
 # Detects the game it was launched next to, resolves it against the RenoDX
 # wiki mod table, and installs the matching .addon64/.addon32 snapshot along
 # with OptiScaler, ReShade and the DLSS enabler.
 #
-# Changes vs 3.5 (all verified against the live wiki + release mirrors):
+# Changes vs 1.5 (all verified against the live wiki + release mirrors):
 #   * No longer aborts mid-run. 3.5 ran under `set -e` with `pipefail` and
 #     captured `grep`/`fzf` output into bare assignments; the first wiki row
 #     without an addon URL (the table header separator) killed the whole
@@ -30,7 +30,7 @@ export LC_ALL=C
 # GLOBALS
 ###############################################################################
 
-SCRIPT_VERSION="4.1"
+SCRIPT_VERSION="2.0"
 MARKER=".optidx-installed"
 MANIFEST=".optidx-files"          # every path OptiDX created, for --uninstall
 
