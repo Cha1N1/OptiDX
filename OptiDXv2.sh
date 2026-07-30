@@ -34,7 +34,7 @@ SCRIPT_VERSION="2.0"
 MARKER=".optidx-installed"
 MANIFEST=".optidx-files"          # every path OptiDX created, for --uninstall
 
-REPO_OPTISCALER="benjamimgois/OptiScaler-builds"
+REPO_OPTISCALER="Cha1N1/OptiDX"
 REPO_LUMA="Filoppi/Luma-Framework"
 REPO_DLSS="Cha1N1/dlss-enabler-bleeding-edge"
 
