@@ -34,7 +34,7 @@ SCRIPT_VERSION="2.0"
 MARKER=".optidx-installed"
 MANIFEST=".optidx-files"          # every path OptiDX created, for --uninstall
 
-REPO_OPTISCALER="Cha1N1/OptiDX"
+REPO_OPTISCALER="Cha1N1/OptiScaler"
 REPO_LUMA="Filoppi/Luma-Framework"
 REPO_DLSS="Cha1N1/dlss-enabler-bleeding-edge"
 
@@ -1227,7 +1227,11 @@ install_optiscaler() {
     # is NOT chronological - so picking the "first edge-* tag" and hand-building
     # "<tag>/optiscaler-edge.7z" resolves to a tag that has no assets and 404s.
     # /releases comes back newest-first and carries the real asset URLs.
-    local json
+local json url=""
+    # First attempt: Try fetching the pinned 'nightly' tag directly
+    json=$(cache_fetch "https://api.github.com/repos/$REPO_OPTISCALER/releases/tags/nightly" \
+                       "optiscaler_nightly.json" 3600) || \
+    # Fallback: Fall back to latest releases if the nightly tag query fails
     json=$(cache_fetch "https://api.github.com/repos/$REPO_OPTISCALER/releases?per_page=20" \
                        "optiscaler_releases.json" 3600) || {
         warn "Could not query OptiScaler releases ($(fetch_reason))"; return 0; }
@@ -1449,8 +1453,8 @@ verify_installation() {
 # a failure here is a no-op because each installer still fetches on demand.
 warm_metadata_caches() {
     [[ "$RENODX_ONLY" == true || "$LUMA_ONLY" == true ]] || {
-        cache_fetch "https://api.github.com/repos/$REPO_OPTISCALER/releases?per_page=20" \
-                    "optiscaler_releases.json" 3600 >/dev/null 2>&1 &
+        cache_fetch "https://api.github.com/repos/$REPO_OPTISCALER/releases/tags/nightly" \
+            "optiscaler_nightly.json" 3600 >/dev/null 2>&1 &
         cache_fetch "https://api.github.com/repos/$REPO_DLSS/releases/tags/dlss-enabler" \
                     "dlss_enabler.json" 3600 >/dev/null 2>&1 &
     }
