@@ -1318,6 +1318,25 @@ local json url=""
     return 0
 }
 
+# Extract the best .zip asset URL from a GitHub releases JSON payload, skipping
+# obvious non-payload archives (source dumps, debug symbols) so a release with
+# several attachments still resolves to the real build regardless of how the
+# asset happens to be named (e.g. "dlss-enabler.zip" vs
+# "DLSS Enabler 4.9.0.6 TRUNK.zip" - GitHub url-encodes the spaces, so the
+# ".zip" suffix match still applies either way).
+pick_dlss_asset() {
+    local json="$1" u b
+    while IFS= read -r u || [[ -n "$u" ]]; do
+        [[ -z "$u" ]] && continue
+        b="${u##*/}"; b="${b,,}"
+        [[ "$b" =~ (debug|symbol|pdb|source|src)([._-]|$) ]] && continue
+        printf '%s' "$u"
+        return 0
+    done < <(json_lines "$json" |
+             sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.[zZ][iI][pP]\)".*/\1/p')
+    return 1
+}
+
 install_dlss_enabler() {
     [[ "$RENODX_ONLY" == true || "$LUMA_ONLY" == true || "$QUIRK_SKIP_DLSS_ENABLER" == true ]] && return 0
     info "Installing DLSS Enabler..."
@@ -1326,24 +1345,27 @@ install_dlss_enabler() {
     # Pinned tag first; if it is ever renamed or retired, fall back to whatever
     # the newest release publishes rather than silently installing nothing.
     if json=$(cache_fetch "https://api.github.com/repos/$REPO_DLSS/releases/tags/dlss-enabler" "dlss_enabler.json" 3600); then
-        url=$(json_lines "$json" |
-              sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.zip\)".*/\1/p' | head -1)
+        url=$(pick_dlss_asset "$json")
     fi
     if [[ -z "$url" ]] && json=$(cache_fetch "https://api.github.com/repos/$REPO_DLSS/releases?per_page=5" \
                                              "dlss_enabler_all.json" 3600); then
-        url=$(json_lines "$json" |
-              sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.zip\)".*/\1/p' | head -1)
+        url=$(pick_dlss_asset "$json")
         [[ -n "$url" ]] && info "DLSS Enabler: pinned tag unavailable, using newest release"
     fi
     [[ -z "$url" ]] && { warn "No DLSS Enabler asset found"; return 0; }
 
     download_file "$url" "$TMP_DIR/dlss-enabler.zip" 2 || return 0
     extract_archive "$TMP_DIR/dlss-enabler.zip" "$TMP_DIR/dlss" || return 0
-    dll=$(find "$TMP_DIR/dlss" -iname "dxgi.dll" 2>/dev/null | head -1)
+    # The enabler's proxy usually ships as dxgi.dll, but some builds ship it as
+    # version.dll instead (e.g. when dxgi.dll is already claimed by another
+    # proxy for the game in question) - accept either name.
+    dll=$(find "$TMP_DIR/dlss" \( -iname "dxgi.dll" -o -iname "version.dll" \) 2>/dev/null | head -1)
     if [[ -n "$dll" ]]; then
         mkdir -p "OptiScaler"
         cp -f "$dll" "OptiScaler/dlss-enabler-headless.dll" &&
             { track "OptiScaler/dlss-enabler-headless.dll"; success "Installed DLSS Enabler"; }
+    else
+        warn "DLSS Enabler proxy DLL (dxgi.dll/version.dll) not found inside the archive"
     fi
     return 0
 }
