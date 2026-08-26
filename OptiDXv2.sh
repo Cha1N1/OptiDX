@@ -1311,7 +1311,7 @@ local json url=""
     if [[ -f "OptiScaler.ini" ]]; then
         sed -i -e "s/^[#]*[[:space:]]*Dx12Upscaler[[:space:]]*=.*/Dx12Upscaler = ffx/" \
                -e "s/^[#]*[[:space:]]*FGInput[[:space:]]*=.*/FGInput = nvngxfg/" \
-               -e "s/^[#]*[[:space:]]*FGOutput[[:space:]]*=.*/FGOutput = nvngxfg/" \
+               -e "s/^[#]*[[:space:]]*FGNvngxReplacement[[:space:]]*=.*/FGNvngxReplacement = Arturs/" \
                -e "s/^[#]*[[:space:]]*LoadReshade[[:space:]]*=.*/LoadReshade = true/" \
                "OptiScaler.ini" 2>/dev/null && success "Configured OptiScaler.ini"
     fi
