@@ -96,14 +96,15 @@ mygame = optiscaler_dll=d3d12.dll
 othergame = skip_reshade=true;optiscaler_dll=version.dll
 
 Run /path/to/optidx.py --list-quirks to inspect active database rules.
-Troubleshooting & Logs
+```
+## Troubleshooting & Logs
 
 Log files are saved next to the target game executable at optidx.log.
 
 If you experience network issues or HTTP 000 errors during a Steam launch:
 
-    Run the script manually from a terminal inside the game directory once to prime the local cache:
+   Run the script manually from a terminal inside the game directory once to prime the local cache:
     cd "/path/to/game/dir"
     /path/to/optidx.py --update
 
-    Relaunch the game directly from Steam.
+   Relaunch the game directly from Steam.
