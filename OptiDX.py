@@ -19,16 +19,6 @@
 #   * unzip/7z are still shelled out to for archive extraction (.zip also has
 #     a pure-Python zipfile fallback/first-try).
 #   * awk/sed/grep/find are no longer required dependencies of this script.
-#
-# Known open issues carried over unmodified from the bash version (not fixed
-# here, since this is a straight port):
-#   * --dry-run does not guard find_renodx_mod()/find_luma_mod() - a "dry run"
-#     still downloads and writes the matched mod.
-#   * FGInput is patched to `nvngxfg` in OptiScaler.ini; unverified whether
-#     that's a valid input (vs. output) value.
-#   * Roman-numeral normalisation only covers i-x.
-#   * No checksum/signature verification on downloaded binaries.
-#   * Log file contains raw ANSI colour codes (same as bash printf '%b').
 ###############################################################################
 
 import atexit
@@ -49,7 +39,7 @@ from pathlib import Path
 # GLOBALS
 # --------------------------------------------------------------------------- #
 
-SCRIPT_VERSION = "2.0"
+SCRIPT_VERSION = "2.1"
 MARKER = ".optidx-installed"
 MANIFEST = ".optidx-files"
 
@@ -139,11 +129,9 @@ C = dict(INFO='\033[36m', OK='\033[32m', WARN='\033[33m', ERR='\033[31m',
 
 ROMAN_MAP = {"i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5",
              "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10"}
-
 ###############################################################################
 # LOGGING (stdout is reserved for function return values; logs go to stderr)
 ###############################################################################
-
 
 def _log(msg):
     print(msg, file=sys.stderr)
@@ -377,7 +365,6 @@ def fetch_reason():
         return f"HTTP {c} - upstream server error"
     return f"HTTP {c}"
 
-
 def human_size(n):
     n = float(n)
     for unit in ("B", "K", "M", "G"):
@@ -385,7 +372,6 @@ def human_size(n):
             return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
         n /= 1024
     return f"{n:.1f}T"
-
 
 def download_file(url, output, tries=3):
     info(f"Downloading {os.path.basename(output)}")
@@ -683,7 +669,6 @@ def detect_exe_bitness(exe):
 # GAME DETECTION
 ###############################################################################
 
-
 def detect_game():
     global GAME_EXE, GAME_DIR, GAME_NAME, GAME_KEY, GAME_DISPLAY
     global GAME_IS_UE, GAME_IS_UNITY, GAME_BITS, STEAM_APPID
@@ -835,7 +820,6 @@ def detect_game():
 # GAME QUIRKS SYSTEM
 ###############################################################################
 
-
 def resolve_game_quirks():
     global QUIRK_OPTISCALER_DLL, QUIRK_SKIP_OPTISCALER, QUIRK_SKIP_RESHADE
     global QUIRK_SKIP_DLSS_ENABLER, QUIRK_EXTRA_DLL_COPIES, QUIRKS_MATCHED
@@ -917,7 +901,6 @@ def list_all_quirks():
 ###############################################################################
 # SCORING / MATCHING (replaces match.awk)
 ###############################################################################
-
 
 def score(q, k):
     lq, lk = len(q), len(k)
@@ -1006,7 +989,6 @@ def match_candidates(candidates, rows, min_score=MIN_SCORE):
 ###############################################################################
 # RENODX RESOLUTION
 ###############################################################################
-
 
 def build_renodx_index(md_path):
     rows = []
@@ -1215,7 +1197,6 @@ def find_renodx_mod():
 # LUMA
 ###############################################################################
 
-
 def find_luma_mod():
     global MOD_FOUND
     if RENODX_ONLY or MOD_FOUND or not CANDIDATE_TITLES:
@@ -1330,7 +1311,6 @@ def install_engine_fallback():
 ###############################################################################
 # OPTISCALER / RESHADE / DLSS
 ###############################################################################
-
 
 def install_optiscaler():
     if RENODX_ONLY or LUMA_ONLY or QUIRK_SKIP_OPTISCALER:
@@ -1596,7 +1576,6 @@ def install_reshade():
 # INSTALL FLOW
 ###############################################################################
 
-
 def track(path):
     if path:
         INSTALLED_FILES.append(path)
@@ -1771,7 +1750,6 @@ def do_install():
 ###############################################################################
 # CLI / ENTRYPOINT
 ###############################################################################
-
 
 def usage():
     print(f"""OptiDX v{SCRIPT_VERSION} (Python) - OptiScaler + RenoDX installer
