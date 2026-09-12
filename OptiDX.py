@@ -1447,9 +1447,11 @@ def install_optiscaler():
         try:
             text = open("OptiScaler.ini", encoding="utf-8", errors="ignore").read()
             text = re.sub(r'(?m)^[#]*\s*Dx12Upscaler\s*=.*', 'Dx12Upscaler = ffx', text)
-            text = re.sub(r'(?m)^[#]*\s*FGInput\s*=.*', 'FGInput = nvngxfg', text)
-            text = re.sub(r'(?m)^[#]*\s*FGNvngxReplacement\s*=.*', 'FGNvngxReplacement = Arturs', text)
+            text = re.sub(r'(?m)^[#]*\s*FGInput\s*=.*', 'FGInput = dlssg', text)
+            text = re.sub(r'(?m)^[#]*\s*FGOutput\s*=.*', 'FGOutput = xefg', text)
+            text = re.sub(r'(?m)^[#]*\s*FGNvngxReplacement\s*=.*', 'FGNvngxReplacement = auto', text)
             text = re.sub(r'(?m)^[#]*\s*LoadReshade\s*=.*', 'LoadReshade = true', text)
+            text = re.sub(r'(?m)^[#]*\s*LoadAsiPlugins\s*=.*', 'LoadAsiPlugins = true', text)
             with open("OptiScaler.ini", "w", encoding="utf-8") as f:
                 f.write(text)
             success("Configured OptiScaler.ini")
