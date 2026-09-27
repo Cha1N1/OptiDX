@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 ###############################################################################
-# OptiDX v2.0 (Python port) - Universal Game Mod Installer
+# OptiDX v2.1 (Python port) - Universal Game Mod Installer
 #
 # 1:1 behavioural port of OptiDXv2.sh: same flags, same marker/manifest files,
 # same quirks database & user config, same cache layout, same install flow.
@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -65,6 +66,12 @@ LOG_FILE = None
 LOG_BUFFER = []
 
 MIN_SCORE = 700
+# NOTE: these are norm()'d (lowercase, alnum-only) slugs, not free text, so
+# "fe" only excludes a mirror slug that is *exactly* "fe" (e.g. a generic
+# "FE"/front-end bundle) - it would also incidentally shadow a real game
+# literally titled "Fe" if one were ever hosted on the mirror under that
+# exact slug. Left in intentionally (ported from the bash blocklist); flag
+# here in case that trade-off ever needs revisiting.
 MIRROR_BLOCKLIST = {"generic", "devkit", "fpslimiter", "_univ", "ue-extended", "unityengine", "unity", "fe"}
 
 UE_IGNORE_REGEX = re.compile(
@@ -89,6 +96,7 @@ INSTALLED_FILES = []
 MOD_FOUND = False
 GAME_ARGS = []
 HAVE_7Z = False
+HAVE_UNZIP = False
 SEVENZIP = None
 FETCH_LAST_CODE = ""
 NET_DIAG_DONE = False
@@ -129,16 +137,27 @@ C = dict(INFO='\033[36m', OK='\033[32m', WARN='\033[33m', ERR='\033[31m',
 
 ROMAN_MAP = {"i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5",
              "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10"}
+
+ANSI_ESCAPE_RE = re.compile(r'\033\[[0-9;]*m')
+
 ###############################################################################
 # LOGGING (stdout is reserved for function return values; logs go to stderr)
 ###############################################################################
 
+
+def strip_ansi(msg):
+    return ANSI_ESCAPE_RE.sub('', msg)
+
+
 def _log(msg):
     print(msg, file=sys.stderr)
     if LOG_FILE:
+        # The log file is a plain-text artifact users attach to bug reports;
+        # it should never end up full of raw \033[...m escape codes just
+        # because color was decided by isatty() at print-time.
         try:
             with open(LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(msg + "\n")
+                f.write(strip_ansi(msg) + "\n")
         except OSError:
             pass
     else:
@@ -153,7 +172,7 @@ def set_log_dir(d):
     if LOG_BUFFER:
         try:
             with open(LOG_FILE, "a", encoding="utf-8") as f:
-                f.write("\n".join(LOG_BUFFER) + "\n")
+                f.write("\n".join(strip_ansi(m) for m in LOG_BUFFER) + "\n")
         except OSError:
             pass
         LOG_BUFFER.clear()
@@ -212,8 +231,12 @@ def need_workspace():
 
 
 def check_requirements():
-    global HAVE_7Z, SEVENZIP
-    missing = [c for c in ("curl", "unzip") if not shutil.which(c)]
+    global HAVE_7Z, SEVENZIP, HAVE_UNZIP
+    # Only curl is truly load-bearing: every archive format we handle has a
+    # pure-Python or 7z path. unzip is optional and used only as a fallback
+    # for .zip files that trip up the zipfile module (e.g. some Zip64 or
+    # slightly-off-spec archives) when 7z isn't installed either.
+    missing = [c for c in ("curl",) if not shutil.which(c)]
     if missing:
         # As a Steam launch wrapper the script must never be the reason a game
         # fails to start: degrade to a pass-through instead of dying.
@@ -221,6 +244,7 @@ def check_requirements():
             warn(f"Missing tools ({' '.join(missing)}) - skipping mod setup and launching the game")
             return False
         die(f"Missing required tools: {' '.join(missing)}")
+    HAVE_UNZIP = shutil.which("unzip") is not None
     for cmd in ("7z", "7za", "7zz"):
         if shutil.which(cmd):
             SEVENZIP = cmd
@@ -307,8 +331,14 @@ def fetch(url, out, tries=3):
         except OSError:
             pass
         # Some Proton/Flatpak sandboxes ship a broken CA bundle; retry unverified.
+        # This weakens the channel for the rest of this download's retries, so
+        # it is surfaced loudly rather than failing silently into an
+        # unauthenticated fetch - that matters most for the actual payload
+        # downloads (DLL/exe/zip/7z), not just metadata JSON.
         if i == 1 and not insecure:
             insecure = ["-k"]
+            warn(f"TLS verification failed for {url} - retrying without cert "
+                 f"verification (known issue on some Proton/Flatpak CA bundles)")
             continue
         if i < tries:
             time.sleep(2)
@@ -398,10 +428,14 @@ def cache_fetch(url, name, max_age=86400):
         fresh = False
     if fresh:
         return str(cf)
-    dl = os.path.join(TMP_DIR, f"cache.{os.getpid()}.{int(time.time() * 1000) % 1000000}.dl")
+    # A per-call uuid4 (rather than pid + truncated millisecond timestamp)
+    # guarantees this temp name can't collide even when several cache_fetch()
+    # calls for different urls land in the same millisecond, which happens
+    # routinely under warm_metadata_caches()'s ThreadPoolExecutor.
+    dl = os.path.join(TMP_DIR, f"cache.{os.getpid()}.{uuid.uuid4().hex}.dl")
     if fetch(url, dl, 2) and os.path.getsize(dl) > 0:
         try:
-            shutil.move(dl, cf)
+            os.replace(dl, cf)  # atomic within the same filesystem
             return str(cf)
         except OSError:
             pass
@@ -432,6 +466,10 @@ def extract_archive(archive, dest="."):
             return True
         except Exception:
             pass
+        # zipfile can choke on some Zip64/slightly-off-spec archives; unzip
+        # is a real (if optional) fallback here before reaching for 7z.
+        if HAVE_UNZIP and run_ok(["unzip", "-o", "-q", archive, "-d", dest]):
+            return True
         if HAVE_7Z:
             return run_ok([SEVENZIP, "x", "-y", archive, f"-o{dest}"])
         return False
@@ -971,7 +1009,13 @@ def match_candidates(candidates, rows, min_score=MIN_SCORE):
             return {"score": best, "name": br[4], "slug": br[5], "ext": br[6],
                     "url": br[7], "matched": c, "dead": br[8]}
 
-    # 2. Bash Parity Fallback: Short-name expansion ("Karma" -> "Karma: The Dark World")
+    # 2. Bash-parity fallback: short-name expansion ("Karma" -> "Karma: The
+    #    Dark World"). This is intentionally looser than score() above - it
+    #    skips the coverage-ratio and length-delta checks entirely, so a
+    #    4-character candidate can match any row whose key merely starts with
+    #    (or is a prefix of) it. Kept only to preserve the original bash
+    #    behaviour; do not tighten score() based on this path, and be aware
+    #    it's the more false-positive-prone of the two matchers.
     for ci, c in enumerate(candidates):
         sp = spaced(c)
         q = tight(sp)
@@ -1076,7 +1120,13 @@ def renodx_index():
 
 
 def renodx_mirror_index():
-    """Slugs published by the aggregated snapshot mirror: [[slug, ext], ...], 64-bit preferred."""
+    """Slugs published by the aggregated snapshot mirror: [[slug, ext], ...], 64-bit preferred.
+
+    NOTE: RENODX_BASE/RENODX_MIRROR_API point at a third-party re-host
+    (marat569/renodx), not the upstream clshortfuse/renodx repo - it exists
+    because upstream doesn't publish prebuilt per-game snapshot addons.
+    Treat it as a lower-trust source than the wiki index / official releases.
+    """
     out = CACHE_DIR / "renodx_mirror.json"
     try:
         st = out.stat()
