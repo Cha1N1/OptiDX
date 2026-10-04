@@ -47,6 +47,10 @@ REPO_OPTISCALER = "Cha1N1/OptiScaler"
 REPO_LUMA = "Filoppi/Luma-Framework"
 REPO_DLSS = "Cha1N1/dlss-enabler-bleeding-edge"
 
+# AMD FidelityFX upscaler DLL, dropped into the OptiScaler folder (always overwrites)
+AMD_DLL_NAME = "amd_fidelityfx_upscaler_dx12.dll"
+AMD_DLL_URL = f"https://github.com/Cha1N1/amdthingy/releases/download/aymd/{AMD_DLL_NAME}"
+
 RENODX_WIKI = "https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md"
 RENODX_BASE = "https://github.com/marat569/renodx/releases/download/snapshot"
 RENODX_MIRROR_API = "https://api.github.com/repos/marat569/renodx/releases/tags/snapshot"
@@ -1459,6 +1463,22 @@ def install_optiscaler():
             pass
 
 
+def install_amd_dll():
+    """Drop the AMD FidelityFX upscaler DLL into the OptiScaler folder, always overwriting."""
+    if RENODX_ONLY or LUMA_ONLY or QUIRK_SKIP_OPTISCALER:
+        return
+    info("Installing AMD FidelityFX upscaler DLL...")
+    try:
+        os.makedirs("OptiScaler", exist_ok=True)
+    except OSError:
+        warn("Could not create the OptiScaler folder - skipping AMD DLL")
+        return
+    # fetch() finishes with os.replace(), so an existing file is overwritten
+    if download_file(AMD_DLL_URL, os.path.join("OptiScaler", AMD_DLL_NAME), 2):
+        track(f"OptiScaler/{AMD_DLL_NAME}")
+        success(f"Installed OptiScaler/{AMD_DLL_NAME}")
+
+
 def pick_dlss_asset(data):
     """Extract the best .zip asset URL, skipping obvious non-payload archives,
     regardless of how the asset happens to be named."""
@@ -1665,6 +1685,8 @@ def verify_installation():
     if os.path.isfile(os.path.join("OptiScaler", "dlss-enabler-headless.dll")):
         success("DLSS Enabler installed")
         found = True
+    if os.path.isfile(os.path.join("OptiScaler", AMD_DLL_NAME)):
+        success(f"AMD DLL installed ({AMD_DLL_NAME})")
     if os.path.isfile("OptiScaler.ini"):
         success("OptiScaler.ini present")
     if not found:
@@ -1712,6 +1734,7 @@ def do_install():
     warm_metadata_caches()
     cleanup_stale()
     install_optiscaler()
+    install_amd_dll()  # after OptiScaler so it overwrites whatever the archive put in OptiScaler/
     install_dlss_enabler()
     install_reshade()
 
