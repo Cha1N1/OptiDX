@@ -41,7 +41,7 @@ from pathlib import Path
 # GLOBALS
 # --------------------------------------------------------------------------- #
 
-SCRIPT_VERSION = "2.1"
+SCRIPT_VERSION = "2.1.2"
 MARKER = ".optidx-installed"
 MANIFEST = ".optidx-files"
 UE_HDR_STATE = ".optidx-ue-hdr.json"
@@ -87,6 +87,9 @@ CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) /
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local/share")) / "optidx"
 HELIXSR_DIR = DATA_DIR / "helixsr"
 HELIXSR_FORWARD_DLL_NAME = "amd_fidelityfx_upscaler_dx12.amd.dll"
+HELIXSR_DLL_NAME = "helixsr.dll"
+HELIXSR_SR_DLL_NAME = "helixsr_upscaler.dll"
+HELIXSR_STATE = ".optidx-helixsr.json"
 
 START_DIR = os.getcwd()
 TMP_DIR = None
@@ -1845,19 +1848,23 @@ def repair_helixsr_forwarding(directory=".", force=False):
     dest = directory / "OptiScaler" / "HelixSR"
     ini = dest / "helixsr.ini"
     source = directory / "OptiScaler" / AMD_DLL_NAME
-    if not ini.is_file() or not source.is_file():
+    state_path = dest / HELIXSR_STATE
+    if not source.is_file() or not (ini.is_file() or state_path.is_file()):
         return False
     pending = None
     try:
-        text = ini.read_text(encoding="utf-8")
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
+        automatic = state.get("automatic_forwarding", False)
+        text = ini.read_text(encoding="utf-8") if ini.is_file() else ""
         current = hdr_ini_values(text, "Forwarding").get("upscalerdll", "")
         old_path = proton_path(source)
         forwarded = dest / HELIXSR_FORWARD_DLL_NAME
+        if current and current.casefold() not in (old_path.casefold(), HELIXSR_FORWARD_DLL_NAME.casefold()):
+            return False  # Preserve manually chosen forwarding libraries, including on update.
         if not force:
-            if current.casefold() == HELIXSR_FORWARD_DLL_NAME.casefold() and forwarded.is_file():
+            if forwarded.is_file() and ((automatic and not current) or
+                                        current.casefold() == HELIXSR_FORWARD_DLL_NAME.casefold()):
                 return False
-            if current and current.casefold() not in (old_path.casefold(), HELIXSR_FORWARD_DLL_NAME.casefold()):
-                return False  # Preserve manually chosen forwarding libraries.
 
         relative = "OptiScaler/HelixSR/" + HELIXSR_FORWARD_DLL_NAME
         manifest = directory / MANIFEST
@@ -1872,12 +1879,19 @@ def repair_helixsr_forwarding(directory=".", force=False):
         shutil.copyfile(source, pending)
         os.chmod(pending, source.stat().st_mode & 0o777)
         os.replace(pending, forwarded)
-        text = set_ini_values(text, "Forwarding", {"UpscalerDll": HELIXSR_FORWARD_DLL_NAME})
-        atomic_write(ini, text.encode("utf-8"), ini.stat().st_mode & 0o777)
+        if automatic:
+            # 1.7 discovers the adjacent .amd.dll and per-game my-fsr DLLs itself.
+            # Remove our old override; retain other settings and comments.
+            if current:
+                text = edit_hdr_ini(text, "Forwarding", {"UpscalerDll": None})
+                atomic_write(ini, text.encode("utf-8"), ini.stat().st_mode & 0o777)
+        else:
+            text = set_ini_values(text, "Forwarding", {"UpscalerDll": HELIXSR_FORWARD_DLL_NAME})
+            atomic_write(ini, text.encode("utf-8"), ini.stat().st_mode & 0o777 if ini.exists() else 0o644)
         track(relative)
         success(f"Configured HelixSR forwarding to {HELIXSR_FORWARD_DLL_NAME}")
         return True
-    except (OSError, UnicodeError) as e:
+    except (OSError, UnicodeError, ValueError, AttributeError) as e:
         warn(f"Could not configure HelixSR forwarding: {e}")
         return False
     finally:
@@ -1902,32 +1916,47 @@ def install_helixsr():
         if not ini.is_file():
             warn("Skipping HelixSR: OptiScaler.ini is missing")
             return False
+        with open(HELIXSR_DIR / required[0], "rb") as f:
+            match = re.search(rb'HelixSR (\d+\.\d+\.\d+)\x00', f.read(4 << 20))
+        version = match.group(1).decode("ascii") if match else "unknown"
+        automatic = bool(match and tuple(int(n) for n in version.split(".")) >= (1, 7, 0))
         text = ini.read_text(encoding="utf-8")
         dest = Path("OptiScaler/HelixSR")
         dest.mkdir(parents=True, exist_ok=True)
-        for name in required:
+        for name in required[1:]:
             shutil.copyfile(HELIXSR_DIR / name, dest / name)
             track((dest / name).as_posix())
-        sr_dll = dest / AMD_DLL_NAME
-        shutil.copyfile(dest / required[0], sr_dll)
+        main_dll = dest / HELIXSR_DLL_NAME
+        sr_dll = dest / HELIXSR_SR_DLL_NAME
+        # Distinct files are required: OptiScaler hooks the SR module separately.
+        shutil.copyfile(HELIXSR_DIR / required[0], main_dll)
+        shutil.copyfile(HELIXSR_DIR / required[0], sr_dll)
+        track(main_dll.as_posix())
         track(sr_dll.as_posix())
         helix_ini = dest / "helixsr.ini"
         if helix_ini.is_file():
             settings = helix_ini.read_text(encoding="utf-8")
         elif (HELIXSR_DIR / "helixsr.ini").is_file():
             settings = (HELIXSR_DIR / "helixsr.ini").read_text(encoding="utf-8")
-        else:
+        elif not automatic:
             settings = ""
-        helix_ini.write_text(settings, encoding="utf-8")
-        track(helix_ini.as_posix())
+        else:
+            settings = None
+        if settings is not None:
+            helix_ini.write_text(settings, encoding="utf-8")
+            track(helix_ini.as_posix())
+        state_path = dest / HELIXSR_STATE
+        atomic_write(state_path, (json.dumps({"version": version, "automatic_forwarding": automatic}) + "\n").encode("utf-8"))
+        track(state_path.as_posix())
         repair_helixsr_forwarding(force=True)
-        text = set_ini_values(text, "Upscalers", {"Dx12Upscaler": "ffx"})
+        text = set_ini_values(text, "Upscalers", {"Dx12Upscaler": "fsr31"})
         text = set_ini_values(text, "Libraries", {
-            "FfxDx12Path": proton_path(dest / required[0]),
+            "FfxDx12Path": proton_path(main_dll),
             "FfxDx12SRPath": proton_path(sr_dll),
         })
         ini.write_text(text, encoding="utf-8")
-        success(f"Installed HelixSR from {HELIXSR_DIR}; select it in the FFX Upscaler menu")
+        success(f"Installed HelixSR {version} from {HELIXSR_DIR}; select DLSS in the game when available, "
+                "or FSR/XeSS; HelixSR is listed in the FFX Upscaler menu")
         return True
     except (OSError, UnicodeError) as e:
         warn(f"Skipping HelixSR: {e}")
